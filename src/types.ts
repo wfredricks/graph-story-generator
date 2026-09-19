@@ -9,6 +9,7 @@ export interface QuerySpec {
   labels: string[];
   filter?: Record<string, string | number | boolean>;
   hops?: number; // default 1
+  role?: 'throughline' | 'color'; // default 'color'
 }
 
 export type ExpectedLength =
@@ -54,7 +55,9 @@ export interface ContextEdge {
 export interface GraphContext {
   nodes: ContextNode[];
   edges: ContextEdge[];
-  summary: string; // organized markdown grouped by label prefix
+  summary: string; // organized markdown: throughline first, then color
+  throughlineNodeIds: string[]; // nodes from throughline queries
+  colorNodeIds: string[]; // nodes from color queries
 }
 
 // ─── Draft types ───────────────────────────────────────────────────────────

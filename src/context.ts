@@ -3,6 +3,7 @@
  * walks edges, and builds structured context.
  *
  * assembleContext is the effect boundary; buildContextSummary is pure.
+ * Supports throughline/color role separation.
  * @style effect (fetch) + pure (summary)
  */
 
@@ -36,10 +37,32 @@ interface NeighborsResponse {
   edges: VizEdge[];
 }
 
-// ─── Pure: build context summary markdown ──────────────────────────────────
+// ─── Pure: render a node group to markdown ─────────────────────────────────
 
-/** @style pure */
-export function buildContextSummary(nodes: ContextNode[]): string {
+function renderNodeGroup(prefix: string, groupNodes: ContextNode[]): string {
+  const lines: string[] = [];
+  lines.push(`### ${prefix}\n`);
+  for (const node of groupNodes) {
+    const label = node.labels.join(', ');
+    const name = (node.properties['name'] as string) ?? node.id;
+    lines.push(`#### ${name} [${label}]`);
+    for (const [key, value] of Object.entries(node.properties)) {
+      if (key === 'code' || key === 'suppressed') continue;
+      lines.push(`- **${key}:** ${String(value)}`);
+    }
+    if (node.connections.length > 0) {
+      lines.push('- **Connections:**');
+      for (const conn of node.connections) {
+        const dir = conn.direction === 'out' ? '→' : '←';
+        lines.push(`  - ${dir} [${conn.relType}] ${conn.nodeId} (${conn.nodeLabel})`);
+      }
+    }
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+function groupByPrefix(nodes: ContextNode[]): Map<string, ContextNode[]> {
   const groups = new Map<string, ContextNode[]>();
   for (const node of nodes) {
     const primary = node.labels[0] ?? 'unknown';
@@ -48,30 +71,48 @@ export function buildContextSummary(nodes: ContextNode[]): string {
     if (!groups.has(prefix)) groups.set(prefix, []);
     groups.get(prefix)!.push(node);
   }
+  return groups;
+}
 
-  const lines: string[] = ['# Graph Context\n'];
-  for (const [prefix, groupNodes] of [...groups.entries()].sort()) {
-    lines.push(`## ${prefix}\n`);
-    for (const node of groupNodes) {
-      const label = node.labels.join(', ');
-      const name = (node.properties['name'] as string) ?? node.id;
-      lines.push(`### ${name} [${label}]`);
-      // Properties (skip internal ones)
-      for (const [key, value] of Object.entries(node.properties)) {
-        if (key === 'code' || key === 'suppressed') continue;
-        lines.push(`- **${key}:** ${String(value)}`);
-      }
-      // Connections
-      if (node.connections.length > 0) {
-        lines.push('- **Connections:**');
-        for (const conn of node.connections) {
-          const dir = conn.direction === 'out' ? '→' : '←';
-          lines.push(`  - ${dir} [${conn.relType}] ${conn.nodeId} (${conn.nodeLabel})`);
-        }
-      }
-      lines.push('');
+// ─── Pure: build context summary with throughline/color separation ──────────
+
+/** @style pure */
+export function buildContextSummary(
+  nodes: ContextNode[],
+  throughlineIds: Set<string>,
+  colorIds: Set<string>,
+): string {
+  const throughlineNodes = nodes.filter((n) => throughlineIds.has(n.id));
+  const colorNodes = nodes.filter((n) => colorIds.has(n.id) && !throughlineIds.has(n.id));
+
+  const lines: string[] = [];
+
+  // Throughline section — the narrative backbone
+  if (throughlineNodes.length > 0) {
+    lines.push('# Narrative Foundation (Through Line)\n');
+    lines.push('These nodes define the narrative arc. Build the story structure from this data.\n');
+    for (const [prefix, groupNodes] of [...groupByPrefix(throughlineNodes).entries()].sort()) {
+      lines.push(renderNodeGroup(prefix, groupNodes));
     }
   }
+
+  // Color section — supporting detail
+  if (colorNodes.length > 0) {
+    lines.push('# Supporting Detail (Color)\n');
+    lines.push('These nodes enrich the narrative with depth and texture. Weave them in to support the through line — do not let them steer the story.\n');
+    for (const [prefix, groupNodes] of [...groupByPrefix(colorNodes).entries()].sort()) {
+      lines.push(renderNodeGroup(prefix, groupNodes));
+    }
+  }
+
+  // Fallback if no roles assigned (all nodes, legacy behavior)
+  if (throughlineNodes.length === 0 && colorNodes.length === 0) {
+    lines.push('# Graph Context\n');
+    for (const [prefix, groupNodes] of [...groupByPrefix(nodes).entries()].sort()) {
+      lines.push(renderNodeGroup(prefix, groupNodes));
+    }
+  }
+
   return lines.join('\n');
 }
 
@@ -85,8 +126,12 @@ export async function assembleContext(
   const allNodes = new Map<string, ContextNode>();
   const allEdges: ContextEdge[] = [];
   const seenEdges = new Set<string>();
+  const throughlineIdSet = new Set<string>();
+  const colorIdSet = new Set<string>();
 
   for (const query of queries) {
+    const role = query.role ?? 'color';
+
     // Step 1: fetch nodes by label
     const labelsParam = query.labels.map(encodeURIComponent).join(',');
     const limit = 2000;
@@ -119,7 +164,6 @@ export async function assembleContext(
         visited.add(nodeId);
 
         if (hop < hops) {
-          // Fetch neighbors for next hop
           try {
             const nResp = await fetch(
               `${graphEndpoint}/api/neighbors/${encodeURIComponent(nodeId)}`,
@@ -142,15 +186,23 @@ export async function assembleContext(
       }
     }
 
-    // Collect all visited nodes from original data + neighbor responses
+    // Collect all visited nodes and tag with role
     for (const n of data.nodes) {
-      if (visited.has(n.id) && !allNodes.has(n.id)) {
-        allNodes.set(n.id, {
-          id: n.id,
-          labels: n.labels,
-          properties: n.properties,
-          connections: [],
-        });
+      if (visited.has(n.id)) {
+        if (!allNodes.has(n.id)) {
+          allNodes.set(n.id, {
+            id: n.id,
+            labels: n.labels,
+            properties: n.properties,
+            connections: [],
+          });
+        }
+        // Tag with role (throughline wins over color if both)
+        if (role === 'throughline') {
+          throughlineIdSet.add(n.id);
+        } else {
+          colorIdSet.add(n.id);
+        }
       }
     }
   }
@@ -176,7 +228,13 @@ export async function assembleContext(
   }
 
   const nodes = [...allNodes.values()];
-  const summary = buildContextSummary(nodes);
+  const summary = buildContextSummary(nodes, throughlineIdSet, colorIdSet);
 
-  return { nodes, edges: allEdges, summary };
+  return {
+    nodes,
+    edges: allEdges,
+    summary,
+    throughlineNodeIds: [...throughlineIdSet],
+    colorNodeIds: [...colorIdSet],
+  };
 }

@@ -49,9 +49,17 @@ export function buildPrompt(
 ): string {
   const sections: string[] = [];
 
-  sections.push('You are a graph-grounded narrative generator. Your output must be faithful to the source data provided below. Every substantive claim must trace to a node in the graph context. Use [nodeId] inline citations when referencing graph data.');
+  // The context summary already separates throughline from color with explicit instructions.
+  // Reinforce the distinction in the system prompt.
+  const hasThroughline = context.throughlineNodeIds.length > 0;
 
-  // Graph context
+  if (hasThroughline) {
+    sections.push('You are a graph-grounded narrative generator. The source data below is organized into two layers:\n\n1. **Narrative Foundation (Through Line)** — these nodes define the story arc. Build the structure, sequence, and dramatic spine from this data.\n2. **Supporting Detail (Color)** — these nodes provide texture and depth. Weave them in to enrich the through line, but never let them hijack the narrative direction.\n\nEvery substantive claim must trace to a node in the graph context. Use [nodeId] inline citations when referencing graph data.');
+  } else {
+    sections.push('You are a graph-grounded narrative generator. Your output must be faithful to the source data provided below. Every substantive claim must trace to a node in the graph context. Use [nodeId] inline citations when referencing graph data.');
+  }
+
+  // Graph context (already separated into throughline/color sections)
   sections.push(context.summary);
 
   // Backstory
